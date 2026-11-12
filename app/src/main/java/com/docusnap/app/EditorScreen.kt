@@ -46,6 +46,11 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.FileOutputStream
+import com.google.android.gms.tasks.Tasks
+import com.google.mlkit.vision.common.InputImage
+import com.google.mlkit.vision.text.TextRecognition
+import com.google.mlkit.vision.text.latin.TextRecognizerOptions
+import androidx.compose.foundation.text.selection.SelectionContainer
 
 private val EditorAccent = androidx.compose.ui.graphics.Color(0xFF8BC5FF)
 private val EditorPanel = androidx.compose.ui.graphics.Color(0xFF192538)
@@ -65,6 +70,7 @@ fun EditorScreen(onBack: () -> Unit, onFilesChanged: () -> Unit) {
     var overlayText by remember { mutableStateOf("") }
     var imageBitmap by remember { mutableStateOf<Bitmap?>(null) }
     var imageName by remember { mutableStateOf("edited_image") }
+    var ocrResult by remember { mutableStateOf("") }
 
     val pdfPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) scope.launch {
@@ -95,6 +101,19 @@ fun EditorScreen(onBack: () -> Unit, onFilesChanged: () -> Unit) {
             busy = false
         }
     }
+    val ocrPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) scope.launch {
+            busy = true
+            val result = withContext(Dispatchers.IO) { extractTextFromDocument(context, uri) }
+            result.onSuccess { text ->
+                ocrResult = text
+                mode = "ocr"
+                message = if (text.isBlank()) "No readable text was found. Try a sharper, brighter scan." else "Text extracted on this device."
+            }.onFailure { message = "Text extraction failed: " + it.message }
+            busy = false
+        }
+    }
+
     val imagePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) scope.launch {
             busy = true
@@ -115,7 +134,7 @@ fun EditorScreen(onBack: () -> Unit, onFilesChanged: () -> Unit) {
                 Icon(Icons.Outlined.ArrowBack, contentDescription = "Back")
             }
             Column(Modifier.weight(1f)) {
-                Text(if (mode == "dashboard") "Editor" else if (mode == "pdf") "PDF Editor" else "Image Editor", fontSize = 26.sp, fontWeight = FontWeight.Bold)
+                Text(if (mode == "dashboard") "Editor" else if (mode == "pdf") "PDF Editor" else if (mode == "image") "Image Editor" else "OCR Text Extractor", fontSize = 26.sp, fontWeight = FontWeight.Bold)
                 Text("Offline editing on this device", color = EditorMuted, fontSize = 12.sp)
             }
         }
@@ -129,6 +148,15 @@ fun EditorScreen(onBack: () -> Unit, onFilesChanged: () -> Unit) {
                         Column(Modifier.padding(start = 14.dp)) {
                             Text("PDF Editor", fontWeight = FontWeight.SemiBold)
                             Text("Preview, reorder, remove, add pages and add text overlays", color = EditorMuted, fontSize = 12.sp)
+                        }
+                    }
+                }
+                Card(onClick = { ocrPicker.launch(arrayOf("image/*", "application/pdf")) }, colors = CardDefaults.cardColors(containerColor = EditorPanel), shape = RoundedCornerShape(18.dp)) {
+                    Row(Modifier.fillMaxWidth().padding(18.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Outlined.PictureAsPdf, null, tint = EditorAccent, modifier = Modifier.size(34.dp))
+                        Column(Modifier.padding(start = 14.dp)) {
+                            Text("OCR Text Extractor", fontWeight = FontWeight.SemiBold)
+                            Text("Extract selectable text from images and multi-page PDFs offline", color = EditorMuted, fontSize = 12.sp)
                         }
                     }
                 }
@@ -209,6 +237,24 @@ fun EditorScreen(onBack: () -> Unit, onFilesChanged: () -> Unit) {
                     }
                 }, Modifier.fillMaxWidth(), enabled = !busy && pageOrder.isNotEmpty()) { Text("Save edited PDF") }
             }
+            "ocr" -> {
+                Text("Recognized text", color = EditorMuted, fontSize = 13.sp)
+                if (ocrResult.isBlank()) {
+                    Text("No text was detected in the selected document.", color = EditorMuted)
+                } else {
+                    SelectionContainer {
+                        Text(ocrResult, modifier = Modifier.fillMaxWidth().weight(1f).padding(8.dp), color = MaterialTheme.colorScheme.onSurface)
+                    }
+                    Button(onClick = {
+                        val result = saveOcrText(context, ocrResult)
+                        result.onSuccess { message = "Text saved as " + it.name; onFilesChanged() }
+                            .onFailure { message = "Could not save text: " + it.message }
+                    }, modifier = Modifier.fillMaxWidth(), enabled = !busy) { Text("Save extracted text") }
+                }
+                OutlinedButton(onClick = { ocrPicker.launch(arrayOf("image/*", "application/pdf")) }, modifier = Modifier.fillMaxWidth(), enabled = !busy) {
+                    Text("Choose another image or PDF")
+                }
+            }
             "image" -> {
                 val bitmap = imageBitmap
                 if (bitmap != null) {
@@ -232,6 +278,59 @@ fun EditorScreen(onBack: () -> Unit, onFilesChanged: () -> Unit) {
         }
         Text(message, color = EditorMuted, fontSize = 12.sp)
     }
+}
+
+
+/**
+ * Extracts text from a selected image or every page of a PDF.
+ * ML Kit's bundled Latin recognizer runs on-device; no document is uploaded.
+ */
+private fun extractTextFromDocument(context: Context, uri: Uri): Result<String> = runCatching {
+    val mime = context.contentResolver.getType(uri).orEmpty()
+    val isPdf = mime.equals("application/pdf", ignoreCase = true) ||
+        uri.toString().substringBefore('?').endsWith(".pdf", ignoreCase = true)
+    val source = copyEditorUri(context, uri, if (isPdf) ".pdf" else ".img")
+    val recognizer = TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
+    try {
+        if (isPdf) {
+            val descriptor = ParcelFileDescriptor.open(source, ParcelFileDescriptor.MODE_READ_ONLY)
+            val renderer = PdfRenderer(descriptor)
+            try {
+                val pages = (0 until renderer.pageCount).map { index ->
+                    val page = renderer.openPage(index)
+                    try {
+                        val scale = minOf(1f, 1800f / maxOf(page.width, page.height))
+                        val bitmap = Bitmap.createBitmap(
+                            (page.width * scale).toInt().coerceAtLeast(1),
+                            (page.height * scale).toInt().coerceAtLeast(1),
+                            Bitmap.Config.ARGB_8888
+                        )
+                        page.render(bitmap, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
+                        try {
+                            val recognized = Tasks.await(recognizer.process(InputImage.fromBitmap(bitmap, 0)))
+                            "----- Page ${index + 1} -----\n" + recognized.text
+                        } finally { bitmap.recycle() }
+                    } finally { page.close() }
+                }
+                pages.joinToString("\n\n")
+            } finally { renderer.close(); descriptor.close() }
+        } else {
+            val bitmap = BitmapFactory.decodeFile(source.absolutePath) ?: error("Unsupported or unreadable image.")
+            try {
+                val scale = minOf(1f, 2400f / maxOf(bitmap.width, bitmap.height))
+                val input = if (scale < 1f) Bitmap.createScaledBitmap(bitmap, (bitmap.width * scale).toInt(), (bitmap.height * scale).toInt(), true) else bitmap
+                try { Tasks.await(recognizer.process(InputImage.fromBitmap(input, 0))).text }
+                finally { if (input !== bitmap) input.recycle() }
+            } finally { bitmap.recycle() }
+        }
+    } finally { recognizer.close(); source.delete() }
+}
+
+private fun saveOcrText(context: Context, text: String): Result<File> = runCatching {
+    val directory = File(context.filesDir, "documents").apply { mkdirs() }
+    val output = File(directory, "OCR_Text_" + System.currentTimeMillis() + ".txt")
+    output.writeText(text, Charsets.UTF_8)
+    output
 }
 
 private fun openPdfForEditing(context: Context, uri: Uri): Result<Pair<File, List<Bitmap>>> = runCatching {
