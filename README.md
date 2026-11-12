@@ -2,23 +2,26 @@
 
 **Offline-first Android document scanner, PDF toolkit and lightweight editor.**
 
-## Snapdoc v0.4.0
+## Current stable baseline: v0.4.0
 - Configurable PDF split: inclusive start page, stop page and pages per output part, with validation and suggested corrections
 - Editor dashboard with PDF Editor and Image Editor workspaces
-- PDF Editor: scrolling page previews, reorder pages, remove pages, append pages from another PDF, rotate a page and add a text overlay
+- PDF Editor: scrolling page previews, reorder, remove, append, rotate and text overlay
 - Image Editor: preview, rotate 90°, center crop to square, grayscale and save a separate edited copy
-- Files library refreshes after editor saves; outputs remain local and can be opened, shared or exported
-- Existing scanner, image-to-PDF, merge, split and PDF optimization tools remain available
+- Local Files actions: open, share, export and delete
+- Offline processing; no account or document upload
 
-## Editing boundaries — read before use
-- PDF text overlay adds new text to a page. It does **not** edit or replace existing PDF text, fonts, paragraphs or layout.
-- Page reorder, delete, append and rotate are real PDF page operations and preserve the existing page content.
-- Image Editor currently supports rotate, center square crop and grayscale. It is not a full layer-based image editor; freeform crop, object removal, text layers and advanced retouching are not included.
-- PDF preview is rendered locally on the device. Large PDFs and high-resolution images use memory; very large files may be slow or exceed device memory.
-- PDF optimization rasterizes pages and may flatten searchable text, links, forms, vectors and accessibility information. Keep the original.
+## v0.4 limitations being addressed in v0.5
+- Existing PDF text is not directly editable; v0.4 text overlay only adds new text.
+- No OCR or searchable-text generation yet.
+- Image editor has no freeform crop, perspective correction, layers or advanced adjustments.
+- No PDF annotation suite, form filling, password-protected export or advanced scanner capture yet.
+- PDF preview currently renders all pages and can use substantial memory for large documents.
+
+## v0.5 development
+The v0.5 work is isolated on feature/android-v5, branched from the verified v0.4 baseline. See [Snapdoc v0.5 roadmap](docs/ROADMAP_V5.md) for the complete feature targets, technical boundaries, implementation sequence and release checks.
 
 ## Download a test APK without opening Android Studio
-Pushes to `feature/android-v1` run GitHub Actions. Open the **Actions** tab, select the latest **Android build** run, and download the `Snapdoc-debug-apk` artifact. Extract the ZIP and install `app-debug.apk`.
+The v0.4 baseline build is available from [GitHub Actions run #22](https://github.com/chandravadiyaDeep/Snapdoc/actions/runs/43229038761). For future v0.5 builds, open the Actions tab, select the latest Android build run on feature/android-v5, and download the Snapdoc-debug-apk artifact. Extract the ZIP and install app-debug.apk.
 
 See [GitHub build instructions](docs/BUILD_FROM_GITHUB.md).
 
