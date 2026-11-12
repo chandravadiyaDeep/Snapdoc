@@ -10,6 +10,8 @@ import android.graphics.pdf.PdfRenderer
 import android.os.ParcelFileDescriptor
 import android.graphics.pdf.PdfDocument
 import android.net.Uri
+import android.content.Intent
+import android.widget.Toast
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -24,6 +26,9 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Delete
+import androidx.compose.material.icons.outlined.Download
+import androidx.compose.material.icons.outlined.OpenInNew
+import androidx.compose.material.icons.outlined.Share
 import androidx.compose.material.icons.outlined.FolderOpen
 import androidx.compose.material.icons.outlined.Image
 import androidx.compose.material.icons.outlined.Merge
@@ -82,6 +87,21 @@ private fun SnapdocApp() {
     var busy by remember { mutableStateOf(false) }
     // The selected rendering preset is applied when creating a PDF.
     var scanFilter by remember { mutableStateOf("Original") }
+    // Increment after file mutations so the Files screen reloads its real directory contents.
+    var filesRefresh by remember { mutableIntStateOf(0) }
+    var pendingExport by remember { mutableStateOf<File?>(null) }
+    val exportLauncher = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+        val source = pendingExport
+        val destination = result.data?.data
+        if (result.resultCode == RESULT_OK && destination != null && source != null) {
+            runCatching {
+                context.contentResolver.openOutputStream(destination)?.use { output -> source.inputStream().use { input -> input.copyTo(output) } }
+                    ?: error("Could not create destination file")
+            }.onSuccess { Toast.makeText(context, "Exported ${source.name}", Toast.LENGTH_SHORT).show() }
+                .onFailure { Toast.makeText(context, "Export failed: ${it.message}", Toast.LENGTH_LONG).show() }
+        }
+        pendingExport = null
+    }
 
     // TakePicture writes the full-resolution camera result to an app-owned URI.
     var pendingCapture by remember { mutableStateOf<File?>(null) }
@@ -110,7 +130,8 @@ private fun SnapdocApp() {
             if (uris.size < 2) { status = "Select at least two PDF files to merge."; return@launch }
             busy = true
             val result = withContext(Dispatchers.IO) { mergePdfs(context, uris) }
-            status = result.fold({ "Merged PDF saved: ${it.name}" }, { "Merge failed: ${it.message}" })
+            status = result.fold({ "Merged PDF ready: ${it.name}" }, { "Merge failed: ${it.message}" })
+            if (result.isSuccess) { filesRefresh++; selectedTab = 1 }
             busy = false
         }
     }
@@ -126,7 +147,8 @@ private fun SnapdocApp() {
         if (uri != null) scope.launch {
             busy = true
             val result = withContext(Dispatchers.IO) { splitPdf(context, uri) }
-            status = result.fold({ "Split ${it} page(s) into separate PDFs in Snapdoc storage." }, { "Split failed: ${it.message}" })
+            status = result.fold({ "Split ${it} page(s) into separate PDFs." }, { "Split failed: ${it.message}" })
+            if (result.isSuccess) { filesRefresh++; selectedTab = 1 }
             busy = false
         }
     }
@@ -162,7 +184,8 @@ private fun SnapdocApp() {
                     else scope.launch {
                         busy = true
                         val result = withContext(Dispatchers.IO) { createPdfFromImages(context, scans, scanFilter) }
-                        status = result.fold({ "PDF created: ${it.name}" }, { "PDF failed: ${it.message}" })
+                        status = result.fold({ "PDF ready: ${it.name}" }, { "PDF failed: ${it.message}" })
+                        if (result.isSuccess) { filesRefresh++; selectedTab = 1; scans = emptyList() }
                         busy = false
                     }
                 },
@@ -173,7 +196,27 @@ private fun SnapdocApp() {
                 onFilterChange = { scanFilter = it },
                 onClear = { scans.forEach { it.delete() }; scans = emptyList(); status = "Current scan session cleared." }
             )
-            1 -> FilesScreen(context.filesDir, Modifier.padding(padding))
+            1 -> FilesScreen(
+                root = context.filesDir,
+                refreshKey = filesRefresh,
+                modifier = Modifier.padding(padding),
+                onOpen = { file -> openLocalFile(context, file) },
+                onShare = { file -> shareLocalFile(context, file) },
+                onExport = { file ->
+                    pendingExport = file
+                    val mime = when (file.extension.lowercase(Locale.ROOT)) { "pdf" -> "application/pdf"; "png" -> "image/png"; else -> "image/jpeg" }
+                    val intent = Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
+                        addCategory(Intent.CATEGORY_OPENABLE)
+                        type = mime
+                        putExtra(Intent.EXTRA_TITLE, file.name)
+                    }
+                    exportLauncher.launch(intent)
+                },
+                onDelete = { file ->
+                    if (file.delete()) { filesRefresh++; Toast.makeText(context, "Deleted ${file.name}", Toast.LENGTH_SHORT).show() }
+                    else Toast.makeText(context, "Could not delete ${file.name}", Toast.LENGTH_SHORT).show()
+                }
+            )
             else -> SettingsScreen(status, Modifier.padding(padding))
         }
     }
@@ -282,27 +325,69 @@ private fun ToolTile(title: String, icon: androidx.compose.ui.graphics.vector.Im
 }
 
 @Composable
-private fun FilesScreen(root: File, modifier: Modifier = Modifier) {
-    // Show generated PDFs and captured images from the app-private documents folder.
-    val files = remember(root) { root.walkTopDown().filter { it.isFile && (it.extension.equals("pdf", true) || it.extension.equals("jpg", true)) }.toList() }
+private fun FilesScreen(
+    root: File,
+    refreshKey: Int,
+    modifier: Modifier = Modifier,
+    onOpen: (File) -> Unit,
+    onShare: (File) -> Unit,
+    onExport: (File) -> Unit,
+    onDelete: (File) -> Unit
+) {
+    // Reload from disk whenever an operation creates or deletes a file.
+    val files = remember(root, refreshKey) {
+        root.walkTopDown().filter { file ->
+            file.isFile && file.extension.lowercase(Locale.ROOT) in setOf("pdf", "jpg", "jpeg", "png")
+        }.sortedByDescending { it.lastModified() }.toList()
+    }
     Column(modifier.fillMaxSize().padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Text("Your files", fontSize = 28.sp, fontWeight = FontWeight.Bold)
-        Text("Saved privately inside Snapdoc.", color = Muted)
+        Text("Open, share, export or delete files stored on this device.", color = Muted)
         if (files.isEmpty()) Text("No files yet. Scan a page or create a PDF.", color = Muted)
         LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
             items(files, key = { it.absolutePath }) { file ->
                 Card(colors = CardDefaults.cardColors(containerColor = Panel)) {
-                    Row(Modifier.fillMaxWidth().padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
-                        Icon(if (file.extension == "pdf") Icons.Outlined.PictureAsPdf else Icons.Outlined.Image, null, tint = Accent)
-                        Column(Modifier.weight(1f).padding(start = 12.dp)) {
-                            Text(file.name, fontWeight = FontWeight.Medium)
-                            Text("${file.length() / 1024} KB", color = Muted, fontSize = 11.sp)
+                    Column(Modifier.fillMaxWidth().padding(12.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(if (file.extension.equals("pdf", true)) Icons.Outlined.PictureAsPdf else Icons.Outlined.Image, null, tint = Accent)
+                            Column(Modifier.weight(1f).padding(start = 12.dp)) {
+                                Text(file.name, fontWeight = FontWeight.Medium, maxLines = 1)
+                                Text("\${file.length() / 1024} KB • \${SimpleDateFormat("dd MMM yyyy, HH:mm", Locale.getDefault()).format(Date(file.lastModified()))}", color = Muted, fontSize = 11.sp)
+                            }
+                        }
+                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End, verticalAlignment = Alignment.CenterVertically) {
+                            TextButton(onClick = { onOpen(file) }) { Icon(Icons.Outlined.OpenInNew, null); Text(" Open") }
+                            TextButton(onClick = { onShare(file) }) { Icon(Icons.Outlined.Share, null); Text(" Share") }
+                            TextButton(onClick = { onExport(file) }) { Icon(Icons.Outlined.Download, null); Text(" Export") }
+                            IconButton(onClick = { onDelete(file) }) { Icon(Icons.Outlined.Delete, contentDescription = "Delete \${file.name}", tint = Color(0xFFFF8A8A)) }
                         }
                     }
                 }
             }
         }
     }
+}
+
+private fun openLocalFile(context: android.content.Context, file: File) {
+    runCatching {
+        val uri = FileProvider.getUriForFile(context, "\${context.packageName}.files", file)
+        val mime = when (file.extension.lowercase(Locale.ROOT)) { "pdf" -> "application/pdf"; "png" -> "image/png"; else -> "image/jpeg" }
+        val intent = Intent(Intent.ACTION_VIEW).setDataAndType(uri, mime).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        context.startActivity(intent)
+    }.onFailure { Toast.makeText(context, "No app can open this file: \${it.message}", Toast.LENGTH_LONG).show() }
+}
+
+private fun shareLocalFile(context: android.content.Context, file: File) {
+    runCatching {
+        val uri = FileProvider.getUriForFile(context, "\${context.packageName}.files", file)
+        val mime = when (file.extension.lowercase(Locale.ROOT)) { "pdf" -> "application/pdf"; "png" -> "image/png"; else -> "image/jpeg" }
+        val intent = Intent(Intent.ACTION_SEND).apply {
+            type = mime
+            putExtra(Intent.EXTRA_STREAM, uri)
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+        context.startActivity(Intent.createChooser(intent, "Share \${file.name}"))
+    }.onFailure { Toast.makeText(context, "Could not share file: \${it.message}", Toast.LENGTH_LONG).show() }
 }
 
 @Composable
