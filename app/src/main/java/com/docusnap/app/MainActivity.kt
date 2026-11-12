@@ -26,6 +26,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Delete
+import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.outlined.Download
 import androidx.compose.material.icons.outlined.OpenInNew
 import androidx.compose.material.icons.outlined.Share
@@ -197,6 +198,8 @@ private fun SnapdocApp() {
             NavigationBarItem(selected = selectedTab == 1, onClick = { selectedTab = 1 },
                 icon = { Icon(Icons.Outlined.FolderOpen, contentDescription = "Files") }, label = { Text("Files") })
             NavigationBarItem(selected = selectedTab == 2, onClick = { selectedTab = 2 },
+                icon = { Icon(Icons.Outlined.Edit, contentDescription = "Editor") }, label = { Text("Editor") })
+            NavigationBarItem(selected = selectedTab == 3, onClick = { selectedTab = 3 },
                 icon = { Icon(Icons.Outlined.Settings, contentDescription = "Settings") }, label = { Text("Settings") })
         }
     }) { padding ->
@@ -246,6 +249,7 @@ private fun SnapdocApp() {
                     else Toast.makeText(context, "Could not delete ${file.name}", Toast.LENGTH_SHORT).show()
                 }
             )
+            2 -> EditorScreen(onBack = { selectedTab = 0 }, onFilesChanged = { filesRefresh++ })
             else -> SettingsScreen(status, Modifier.padding(padding))
         }
     }
