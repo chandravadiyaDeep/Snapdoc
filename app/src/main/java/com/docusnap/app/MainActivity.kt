@@ -161,7 +161,7 @@ private fun SnapdocApp() {
                     if (scans.isEmpty()) status = "Capture or import images first."
                     else scope.launch {
                         busy = true
-                        val result = withContext(Dispatchers.IO) { createPdfFromImages(context, scans) }
+                        val result = withContext(Dispatchers.IO) { createPdfFromImages(context, scans, scanFilter) }
                         status = result.fold({ "PDF created: ${it.name}" }, { "PDF failed: ${it.message}" })
                         busy = false
                     }
