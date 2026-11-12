@@ -18,6 +18,8 @@ jobs:
     name: Build and test Android app
     runs-on: ubuntu-latest
     timeout-minutes: 35
+    env:
+      ANDROID_HOME: /usr/local/lib/android/sdk
     steps:
       - name: Checkout source
         uses: actions/checkout@v4
@@ -30,9 +32,11 @@ jobs:
 
       - name: Install Android 36 SDK
         run: |
-          # GitHub's Ubuntu runner image already includes the Android SDK and sdkmanager.
-          yes | sdkmanager --licenses
-          sdkmanager --install "platforms;android-36" "build-tools;36.0.0"
+          # Locate the installed command-line tools explicitly; sdkmanager is not always on PATH.
+          SDKMANAGER="$(find "$ANDROID_HOME/cmdline-tools" -type f -name sdkmanager | sort -V | tail -n 1)"
+          test -n "$SDKMANAGER"
+          yes | "$SDKMANAGER" --licenses
+          "$SDKMANAGER" --install "platforms;android-36" "build-tools;36.0.0"
 
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
