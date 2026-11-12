@@ -5,6 +5,9 @@ import android.graphics.BitmapFactory
 import android.graphics.ColorMatrix
 import android.graphics.ColorMatrixColorFilter
 import android.graphics.Paint
+import android.graphics.Bitmap.Config
+import android.graphics.pdf.PdfRenderer
+import android.os.ParcelFileDescriptor
 import android.graphics.pdf.PdfDocument
 import android.net.Uri
 import android.os.Bundle
@@ -77,6 +80,8 @@ private fun SnapdocApp() {
     var scans by remember { mutableStateOf(emptyList<File>()) }
     var status by remember { mutableStateOf("Everything is processed locally on this device.") }
     var busy by remember { mutableStateOf(false) }
+    // The selected rendering preset is applied when creating a PDF.
+    var scanFilter by remember { mutableStateOf("Original") }
 
     // TakePicture writes the full-resolution camera result to an app-owned URI.
     var pendingCapture by remember { mutableStateOf<File?>(null) }
@@ -106,6 +111,14 @@ private fun SnapdocApp() {
             busy = true
             val result = withContext(Dispatchers.IO) { mergePdfs(context, uris) }
             status = result.fold({ "Merged PDF saved: ${it.name}" }, { "Merge failed: ${it.message}" })
+            busy = false
+        }
+    }
+    val pdfPickerForCompress = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) scope.launch {
+            busy = true
+            val result = withContext(Dispatchers.IO) { compressPdf(context, uri) }
+            status = result.fold({ "Optimized PDF saved: \${it.name}" }, { "Optimization failed: \${it.message}" })
             busy = false
         }
     }
@@ -155,6 +168,9 @@ private fun SnapdocApp() {
                 },
                 onMerge = { pdfPickerForMerge.launch(arrayOf("application/pdf")) },
                 onSplit = { pdfPickerForSplit.launch(arrayOf("application/pdf")) },
+                onCompress = { pdfPickerForCompress.launch(arrayOf("application/pdf")) },
+                scanFilter = scanFilter,
+                onFilterChange = { scanFilter = it },
                 onClear = { scans.forEach { it.delete() }; scans = emptyList(); status = "Current scan session cleared." }
             )
             1 -> FilesScreen(context.filesDir, Modifier.padding(padding))
@@ -174,6 +190,9 @@ private fun HomeScreen(
     onCreatePdf: () -> Unit,
     onMerge: () -> Unit,
     onSplit: () -> Unit,
+    onCompress: () -> Unit,
+    scanFilter: String,
+    onFilterChange: (String) -> Unit,
     onClear: () -> Unit
 ) {
     LazyColumn(modifier = modifier.fillMaxSize().padding(horizontal = 20.dp),
@@ -214,6 +233,12 @@ private fun HomeScreen(
                 Text("$pageCount page(s)", color = Accent, fontSize = 13.sp)
             }
             if (pageCount > 0) {
+                Text("PDF appearance", color = Muted, fontSize = 12.sp)
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    listOf("Original", "Grayscale", "B&W").forEach { preset ->
+                        FilterChip(selected = scanFilter == preset, onClick = { onFilterChange(preset) }, label = { Text(preset) }, enabled = !busy)
+                    }
+                }
                 Button(onClick = onCreatePdf, modifier = Modifier.fillMaxWidth(), enabled = !busy) {
                     Icon(Icons.Outlined.PictureAsPdf, contentDescription = null)
                     Text("  Create PDF from pages")
@@ -228,6 +253,10 @@ private fun HomeScreen(
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 ToolTile("Merge PDFs", Icons.Outlined.Merge, Modifier.weight(1f), onMerge)
                 ToolTile("Split PDF", Icons.Outlined.PictureAsPdf, Modifier.weight(1f), onSplit)
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                ToolTile("Optimize PDF", Icons.Outlined.PictureAsPdf, Modifier.weight(1f), onCompress)
+                ToolTile("Import pages", Icons.Outlined.Image, Modifier.weight(1f), onImportImages)
             }
         }
         item {
@@ -294,22 +323,24 @@ private fun copyUriToScans(context: android.content.Context, uri: Uri): File? = 
     target.takeIf { it.exists() && it.length() > 0 }
 } catch (_: Exception) { null }
 
-private fun createPdfFromImages(context: android.content.Context, images: List<File>): Result<File> = runCatching {
+private fun createPdfFromImages(context: android.content.Context, images: List<File>, filter: String): Result<File> = runCatching {
     val dir = File(context.filesDir, "documents").apply { mkdirs() }
     val output = File(dir, "Snapdoc_${System.currentTimeMillis()}.pdf")
     val pdf = PdfDocument()
     try {
         images.forEachIndexed { index, file ->
             val bitmap = BitmapFactory.decodeFile(file.absolutePath) ?: error("Cannot read ${file.name}")
+            val processed = applyScanFilter(bitmap, filter)
             val pageInfo = PdfDocument.PageInfo.Builder(595, 842, index + 1).create()
             val page = pdf.startPage(pageInfo)
-            val scale = minOf(555f / bitmap.width, 802f / bitmap.height)
-            val width = (bitmap.width * scale).toInt()
-            val height = (bitmap.height * scale).toInt()
+            val scale = minOf(555f / processed.width, 802f / processed.height)
+            val width = (processed.width * scale).toInt()
+            val height = (processed.height * scale).toInt()
             val left = (595 - width) / 2f
             val top = (842 - height) / 2f
-            page.canvas.drawBitmap(bitmap, null, android.graphics.RectF(left, top, left + width, top + height), Paint(Paint.ANTI_ALIAS_FLAG))
+            page.canvas.drawBitmap(processed, null, android.graphics.RectF(left, top, left + width, top + height), Paint(Paint.ANTI_ALIAS_FLAG))
             pdf.finishPage(page)
+            if (processed !== bitmap) processed.recycle()
             bitmap.recycle()
         }
         FileOutputStream(output).use { pdf.writeTo(it) }
@@ -350,4 +381,63 @@ private fun splitPdf(context: android.content.Context, uri: Uri): Result<Int> = 
         document.close()
         source.delete()
     }
+}
+
+// Apply a predictable offline scan preset without changing the source image files.
+private fun applyScanFilter(source: Bitmap, filter: String): Bitmap {
+    if (filter == "Original") return source
+    val output = source.copy(Config.ARGB_8888, true)
+    val pixels = IntArray(output.width * output.height)
+    output.getPixels(pixels, 0, output.width, 0, 0, output.width, output.height)
+    for (index in pixels.indices) {
+        val color = pixels[index]
+        val gray = (android.graphics.Color.red(color) * 0.299 +
+            android.graphics.Color.green(color) * 0.587 +
+            android.graphics.Color.blue(color) * 0.114).toInt()
+        val value = if (filter == "B&W") { if (gray >= 170) 255 else 0 } else gray
+        pixels[index] = android.graphics.Color.rgb(value, value, value)
+    }
+    output.setPixels(pixels, 0, output.width, 0, 0, output.width, output.height)
+    return output
+}
+
+// Re-render PDF pages as JPEG-backed pages to reduce scanned-document size.
+// All processing happens in app-private cache/storage; the input remains untouched.
+private fun compressPdf(context: android.content.Context, uri: Uri): Result<File> = runCatching {
+    val input = copyUriToCache(context, uri)
+    val outputDir = File(context.filesDir, "documents").apply { mkdirs() }
+    val output = File(outputDir, "Optimized_${System.currentTimeMillis()}.pdf")
+    val descriptor = ParcelFileDescriptor.open(input, ParcelFileDescriptor.MODE_READ_ONLY)
+    val renderer = PdfRenderer(descriptor)
+    val pdf = PdfDocument()
+    try {
+        for (pageIndex in 0 until renderer.pageCount) {
+            val sourcePage = renderer.openPage(pageIndex)
+            try {
+                val maxDimension = 1600
+                val ratio = minOf(1f, maxDimension.toFloat() / maxOf(sourcePage.width, sourcePage.height))
+                val width = (sourcePage.width * ratio).toInt().coerceAtLeast(1)
+                val height = (sourcePage.height * ratio).toInt().coerceAtLeast(1)
+                val bitmap = Bitmap.createBitmap(width, height, Config.ARGB_8888)
+                sourcePage.render(bitmap, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
+                val pageInfo = PdfDocument.PageInfo.Builder(595, 842, pageIndex + 1).create()
+                val page = pdf.startPage(pageInfo)
+                val scale = minOf(555f / width, 802f / height)
+                val drawWidth = width * scale
+                val drawHeight = height * scale
+                val left = (595f - drawWidth) / 2f
+                val top = (842f - drawHeight) / 2f
+                page.canvas.drawBitmap(bitmap, null, android.graphics.RectF(left, top, left + drawWidth, top + drawHeight), Paint(Paint.ANTI_ALIAS_FLAG))
+                pdf.finishPage(page)
+                bitmap.recycle()
+            } finally { sourcePage.close() }
+        }
+        FileOutputStream(output).use { pdf.writeTo(it) }
+    } finally {
+        pdf.close()
+        renderer.close()
+        descriptor.close()
+        input.delete()
+    }
+    output
 }
