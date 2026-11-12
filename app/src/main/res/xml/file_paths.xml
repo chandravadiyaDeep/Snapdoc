@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <paths xmlns:android="http://schemas.android.com/apk/res/android">
-    <!-- Camera output is restricted to the app's private files directory. -->
+    <!-- Share only app-owned scan images and generated documents through temporary content URIs. -->
     <files-path name="snapdoc_scans" path="scans/" />
+    <files-path name="snapdoc_documents" path="documents/" />
 </paths>
