@@ -90,6 +90,9 @@ private fun SnapdocApp() {
     // Increment after file mutations so the Files screen reloads its real directory contents.
     var filesRefresh by remember { mutableIntStateOf(0) }
     var pendingExport by remember { mutableStateOf<File?>(null) }
+    var splitPageCount by remember { mutableIntStateOf(0) }
+    var splitSource by remember { mutableStateOf<Uri?>(null) }
+    var showSplitDialog by remember { mutableStateOf(false) }
     val exportLauncher = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
         val source = pendingExport
         val destination = result.data?.data
@@ -149,9 +152,13 @@ private fun SnapdocApp() {
     val pdfPickerForSplit = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) scope.launch {
             busy = true
-            val result = withContext(Dispatchers.IO) { splitPdf(context, uri) }
-            status = result.fold({ "Split ${it} page(s) into separate PDFs." }, { "Split failed: ${it.message}" })
-            if (result.isSuccess) { filesRefresh++; selectedTab = 1 }
+            val result = withContext(Dispatchers.IO) { getPdfPageCount(context, uri) }
+            result.onSuccess { count ->
+                splitSource = uri
+                splitPageCount = count
+                showSplitDialog = true
+                status = "PDF selected: $count page(s). Choose the split range."
+            }.onFailure { status = "Could not read PDF: ${it.message}" }
             busy = false
         }
     }
@@ -162,6 +169,25 @@ private fun SnapdocApp() {
         pendingCapture = file
         val uri = FileProvider.getUriForFile(context, "${context.packageName}.files", file)
         cameraLauncher.launch(uri)
+    }
+
+    if (showSplitDialog && splitSource != null) {
+        SplitPdfDialog(
+            pageCount = splitPageCount,
+            onDismiss = { showSplitDialog = false; splitSource = null },
+            onSplit = { startPage, endPage, pagesPerPart ->
+                val sourceUri = splitSource
+                showSplitDialog = false
+                if (sourceUri != null) scope.launch {
+                    busy = true
+                    val result = withContext(Dispatchers.IO) { splitPdf(context, sourceUri, startPage, endPage, pagesPerPart) }
+                    status = result.fold({ "Created " + it.size + " PDF part(s), pages " + startPage + "–" + endPage + "." }, { "Split failed: ${it.message}" })
+                    if (result.isSuccess) { filesRefresh++; selectedTab = 1 }
+                    busy = false
+                    splitSource = null
+                }
+            }
+        )
     }
 
     Scaffold(containerColor = Ink, bottomBar = {
@@ -328,6 +354,51 @@ private fun ToolTile(title: String, icon: androidx.compose.ui.graphics.vector.Im
 }
 
 @Composable
+private fun SplitPdfDialog(
+    pageCount: Int,
+    onDismiss: () -> Unit,
+    onSplit: (startPage: Int, endPage: Int, pagesPerPart: Int) -> Unit
+) {
+    var startText by remember(pageCount) { mutableStateOf("1") }
+    var endText by remember(pageCount) { mutableStateOf(pageCount.toString()) }
+    var partText by remember { mutableStateOf("1") }
+    val start = startText.toIntOrNull()
+    val end = endText.toIntOrNull()
+    val perPart = partText.toIntOrNull()
+    val valid = start != null && end != null && perPart != null && start >= 1 && end <= pageCount && start <= end && perPart >= 1
+    val message = when {
+        start == null || end == null || perPart == null -> "Enter whole numbers in all fields."
+        start < 1 -> "Start page must be at least 1."
+        end > pageCount -> "This PDF has only " + pageCount + " pages. Choose an end page from 1 to " + pageCount + "."
+        start > end -> "Start page must be before or equal to end page."
+        perPart < 1 -> "Each part must contain at least 1 page."
+        else -> {
+            val selected = end - start + 1
+            val parts = (selected + perPart - 1) / perPart
+            "Selected: " + selected + " pages • " + parts + " output part(s). Last part may contain fewer pages."
+        }
+    }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Split PDF") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text("This PDF contains " + pageCount + " page(s). Page numbers are inclusive.")
+                OutlinedTextField(startText, { startText = it.filter(Char::isDigit) }, label = { Text("Start page") }, singleLine = true)
+                OutlinedTextField(endText, { endText = it.filter(Char::isDigit) }, label = { Text("Stop at page") }, singleLine = true)
+                OutlinedTextField(partText, { partText = it.filter(Char::isDigit) }, label = { Text("Pages per part") }, singleLine = true)
+                Text(message, color = if (valid) Accent else Color(0xFFFFA4A4), fontSize = 12.sp)
+                if (!valid && start != null && end != null && start in 1..pageCount) {
+                    Text("Try a range from page " + start + " to " + pageCount + ", or a shorter range.", color = Muted, fontSize = 11.sp)
+                }
+            }
+        },
+        confirmButton = { Button(onClick = { if (valid) onSplit(start!!, end!!, perPart!!) }, enabled = valid) { Text("Split PDF") } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } }
+    )
+}
+
+@Composable
 private fun FilesScreen(
     root: File,
     refreshKey: Int,
@@ -455,20 +526,42 @@ private fun mergePdfs(context: android.content.Context, uris: List<Uri>): Result
     output
 }
 
-private fun splitPdf(context: android.content.Context, uri: Uri): Result<Int> = runCatching {
+// Read page count before asking the user for a split range.
+private fun getPdfPageCount(context: android.content.Context, uri: Uri): Result<Int> = runCatching {
+    val source = copyUriToCache(context, uri)
+    try { PDDocument.load(source).use { it.numberOfPages } } finally { source.delete() }
+}
+
+// Split the requested inclusive page range into parts of the chosen page count.
+private fun splitPdf(context: android.content.Context, uri: Uri, startPage: Int, endPage: Int, pagesPerPart: Int): Result<List<File>> = runCatching {
     val source = copyUriToCache(context, uri)
     val document = PDDocument.load(source)
+    val outputFiles = mutableListOf<File>()
     try {
-        val parts = Splitter().split(document)
-        val outputDir = File(context.filesDir, "documents/split_${System.currentTimeMillis()}").apply { mkdirs() }
-        parts.forEachIndexed { index, part ->
-            part.use { it.save(File(outputDir, "page_${index + 1}.pdf")) }
+        require(startPage >= 1 && endPage <= document.numberOfPages && startPage <= endPage) {
+            "Choose a range from page 1 to " + document.numberOfPages + ", with start before or equal to end."
         }
-        parts.size
+        require(pagesPerPart >= 1) { "Pages per part must be at least 1." }
+        val outputDir = File(context.filesDir, "documents/split_" + System.currentTimeMillis()).apply { mkdirs() }
+        var partNumber = 1
+        var page = startPage - 1
+        while (page <= endPage - 1) {
+            val part = PDDocument()
+            try {
+                val stop = minOf(page + pagesPerPart, endPage)
+                for (sourceIndex in page until stop) part.importPage(document.getPage(sourceIndex))
+                val output = File(outputDir, "part_" + partNumber.toString().padStart(2, '0') + "_pages_" + (page + 1) + "-" + stop + ".pdf")
+                part.save(output)
+                outputFiles += output
+                page = stop
+                partNumber++
+            } finally { part.close() }
+        }
     } finally {
         document.close()
         source.delete()
     }
+    outputFiles
 }
 
 // Apply a predictable offline scan preset without changing the source image files.
