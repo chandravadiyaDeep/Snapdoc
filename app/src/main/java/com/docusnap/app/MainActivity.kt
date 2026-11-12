@@ -93,7 +93,7 @@ private fun SnapdocApp() {
     val exportLauncher = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
         val source = pendingExport
         val destination = result.data?.data
-        if (result.resultCode == RESULT_OK && destination != null && source != null) {
+        if (result.resultCode == android.app.Activity.RESULT_OK && destination != null && source != null) {
             runCatching {
                 context.contentResolver.openOutputStream(destination)?.use { output -> source.inputStream().use { input -> input.copyTo(output) } }
                     ?: error("Could not create destination file")
@@ -139,7 +139,8 @@ private fun SnapdocApp() {
         if (uri != null) scope.launch {
             busy = true
             val result = withContext(Dispatchers.IO) { compressPdf(context, uri) }
-            status = result.fold({ "Optimized PDF saved: \${it.name}" }, { "Optimization failed: \${it.message}" })
+            status = result.fold({ "Optimized PDF ready: ${it.name}" }, { "Optimization failed: ${it.message}" })
+            if (result.isSuccess) { filesRefresh++; selectedTab = 1 }
             busy = false
         }
     }
@@ -352,14 +353,14 @@ private fun FilesScreen(
                             Icon(if (file.extension.equals("pdf", true)) Icons.Outlined.PictureAsPdf else Icons.Outlined.Image, null, tint = Accent)
                             Column(Modifier.weight(1f).padding(start = 12.dp)) {
                                 Text(file.name, fontWeight = FontWeight.Medium, maxLines = 1)
-                                Text("\${file.length() / 1024} KB • \${SimpleDateFormat("dd MMM yyyy, HH:mm", Locale.getDefault()).format(Date(file.lastModified()))}", color = Muted, fontSize = 11.sp)
+                                Text("${file.length() / 1024} KB • ${SimpleDateFormat("dd MMM yyyy, HH:mm", Locale.getDefault()).format(Date(file.lastModified()))}", color = Muted, fontSize = 11.sp)
                             }
                         }
                         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End, verticalAlignment = Alignment.CenterVertically) {
                             TextButton(onClick = { onOpen(file) }) { Icon(Icons.Outlined.OpenInNew, null); Text(" Open") }
                             TextButton(onClick = { onShare(file) }) { Icon(Icons.Outlined.Share, null); Text(" Share") }
                             TextButton(onClick = { onExport(file) }) { Icon(Icons.Outlined.Download, null); Text(" Export") }
-                            IconButton(onClick = { onDelete(file) }) { Icon(Icons.Outlined.Delete, contentDescription = "Delete \${file.name}", tint = Color(0xFFFF8A8A)) }
+                            IconButton(onClick = { onDelete(file) }) { Icon(Icons.Outlined.Delete, contentDescription = "Delete ${file.name}", tint = Color(0xFFFF8A8A)) }
                         }
                     }
                 }
@@ -370,24 +371,24 @@ private fun FilesScreen(
 
 private fun openLocalFile(context: android.content.Context, file: File) {
     runCatching {
-        val uri = FileProvider.getUriForFile(context, "\${context.packageName}.files", file)
+        val uri = FileProvider.getUriForFile(context, "${context.packageName}.files", file)
         val mime = when (file.extension.lowercase(Locale.ROOT)) { "pdf" -> "application/pdf"; "png" -> "image/png"; else -> "image/jpeg" }
         val intent = Intent(Intent.ACTION_VIEW).setDataAndType(uri, mime).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
         context.startActivity(intent)
-    }.onFailure { Toast.makeText(context, "No app can open this file: \${it.message}", Toast.LENGTH_LONG).show() }
+    }.onFailure { Toast.makeText(context, "No app can open this file: ${it.message}", Toast.LENGTH_LONG).show() }
 }
 
 private fun shareLocalFile(context: android.content.Context, file: File) {
     runCatching {
-        val uri = FileProvider.getUriForFile(context, "\${context.packageName}.files", file)
+        val uri = FileProvider.getUriForFile(context, "${context.packageName}.files", file)
         val mime = when (file.extension.lowercase(Locale.ROOT)) { "pdf" -> "application/pdf"; "png" -> "image/png"; else -> "image/jpeg" }
         val intent = Intent(Intent.ACTION_SEND).apply {
             type = mime
             putExtra(Intent.EXTRA_STREAM, uri)
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
         }
-        context.startActivity(Intent.createChooser(intent, "Share \${file.name}"))
-    }.onFailure { Toast.makeText(context, "Could not share file: \${it.message}", Toast.LENGTH_LONG).show() }
+        context.startActivity(Intent.createChooser(intent, "Share ${file.name}"))
+    }.onFailure { Toast.makeText(context, "Could not share file: ${it.message}", Toast.LENGTH_LONG).show() }
 }
 
 @Composable
