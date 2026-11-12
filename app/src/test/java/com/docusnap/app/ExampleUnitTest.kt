@@ -4,8 +4,9 @@ import org.junit.Assert.assertEquals
 import org.junit.Test
 
 class ExampleUnitTest {
-    @Test fun initialVersion_isOne() {
-        // Verify that the app module has the expected initial release version.
-        assertEquals("1.0.0", BuildConfig.VERSION_NAME)
+    @Test
+    fun releaseVersion_matchesV020() {
+        // Keep the release metadata test aligned with the current app version.
+        assertEquals("0.2.0", BuildConfig.VERSION_NAME)
     }
 }
