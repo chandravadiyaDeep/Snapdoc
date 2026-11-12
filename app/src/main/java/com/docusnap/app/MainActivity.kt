@@ -109,6 +109,7 @@ private fun SnapdocApp() {
         val file = pendingCapture
         if (saved && file != null && file.exists() && file.length() > 0L) {
             scans = scans + file
+            filesRefresh++
             status = "Page captured. Add another page or create a PDF."
         } else {
             file?.delete()
@@ -121,6 +122,7 @@ private fun SnapdocApp() {
             busy = true
             val imported = withContext(Dispatchers.IO) { uris.mapNotNull { copyUriToScans(context, it) } }
             scans = scans + imported
+            if (imported.isNotEmpty()) filesRefresh++
             status = "${imported.size} image(s) added."
             busy = false
         }
@@ -195,7 +197,7 @@ private fun SnapdocApp() {
                 onCompress = { pdfPickerForCompress.launch(arrayOf("application/pdf")) },
                 scanFilter = scanFilter,
                 onFilterChange = { scanFilter = it },
-                onClear = { scans.forEach { it.delete() }; scans = emptyList(); status = "Current scan session cleared." }
+                onClear = { scans.forEach { it.delete() }; scans = emptyList(); filesRefresh++; status = "Current scan session cleared." }
             )
             1 -> FilesScreen(
                 root = context.filesDir,
