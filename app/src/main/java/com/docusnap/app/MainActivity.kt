@@ -236,7 +236,7 @@ private fun SnapdocApp() {
                 onShare = { file -> shareLocalFile(context, file) },
                 onExport = { file ->
                     pendingExport = file
-                    val mime = when (file.extension.lowercase(Locale.ROOT)) { "pdf" -> "application/pdf"; "png" -> "image/png"; else -> "image/jpeg" }
+                    val mime = when (file.extension.lowercase(Locale.ROOT)) { "pdf" -> "application/pdf"; "png" -> "image/png"; "txt" -> "text/plain"; else -> "image/jpeg" }
                     val intent = Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
                         addCategory(Intent.CATEGORY_OPENABLE)
                         type = mime
@@ -415,7 +415,7 @@ private fun FilesScreen(
     // Reload from disk whenever an operation creates or deletes a file.
     val files = remember(root, refreshKey) {
         root.walkTopDown().filter { file ->
-            file.isFile && file.extension.lowercase(Locale.ROOT) in setOf("pdf", "jpg", "jpeg", "png")
+            file.isFile && file.extension.lowercase(Locale.ROOT) in setOf("pdf", "jpg", "jpeg", "png", "txt")
         }.sortedByDescending { it.lastModified() }.toList()
     }
     Column(modifier.fillMaxSize().padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
